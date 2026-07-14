@@ -4,7 +4,14 @@ SDK « Se connecter avec BNAAS » pour applications tierces. Obtient un **jeton
 d'identité notariale** via OAuth 2.0 (Authorization Code + PKCE), sans copier-coller.
 
 - TypeScript, **aucune dépendance runtime** (`crypto.subtle` natif). Navigateur uniquement.
-- Popup par défaut, **repli automatique en redirection** si la popup est bloquée.
+- Popup par défaut, **repli automatique en redirection** si la popup est bloquée ou si un
+  login interactif est nécessaire.
+
+> **Dépôt source de vérité.** Ce dépôt est la référence publique du SDK. Les applications
+> tierces l'installent depuis GitHub Packages ; toute copie locale ailleurs (ex. dans le
+> portail, à des fins de test) n'est pas maintenue et peut diverger.
+>
+> Pour intégrer en tant que partenaire, voir **[docs/GUIDE-PARTENAIRE.md](docs/GUIDE-PARTENAIRE.md)**.
 
 ## Prérequis (fournis par BNAAS)
 
@@ -54,10 +61,26 @@ async function onObtenirJeton() {
 }
 ```
 
-## Usage — redirection (repli / sans popup)
+## Page de callback (obligatoire pour couvrir tous les cas)
 
-En cas de popup bloquée, `connect()` bascule seul en redirection. Sur la page de
-callback (`redirectUri`), appeler `handleRedirectCallback()` au chargement :
+Sur la page servie à ton `redirectUri`, appelle `handleRedirectCallback()` au chargement.
+C'est nécessaire dans deux situations :
+- **Notaire sans session BNAAS active** : la popup fait un login interactif Microsoft, ce
+  qui coupe le lien avec la fenêtre d'origine (COOP). La popup retombe alors sur le
+  `redirectUri` et `handleRedirectCallback()` **relaie le code** à la fenêtre d'origine,
+  puis se referme. `connect()` s'y résout normalement — rien de plus à faire.
+- **Popup bloquée / `preferRedirect`** : redirection pleine page ; `handleRedirectCallback()`
+  renvoie directement `{ token, expires_at }`.
+
+```ts
+import { connect, handleRedirectCallback } from '@chaireblockchainulaval/bnaas-connect';
+
+const result = await handleRedirectCallback();
+if (result) {
+  const { token, expires_at } = result;
+}
+
+// Pour forcer le mode redirection dès le départ :
 
 ```ts
 import { connect, handleRedirectCallback } from '@chaireblockchainulaval/bnaas-connect';
