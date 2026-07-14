@@ -161,9 +161,9 @@ export async function connect(opts: ConnectOptions): Promise<TokenResult> {
     return new Promise<TokenResult>(() => {});
   }
 
-  // Popup ouverte : persister pour permettre le relais si l'opener est coupé.
-  persist('popup');
-
+  // Popup ouverte. Pas de persistance nécessaire : en cas de repli, la popup
+  // relaie le code lu dans son URL (détection via window.name), et c'est cette
+  // instance-ci qui valide le state et détient le code_verifier.
   return new Promise<TokenResult>((resolve, reject) => {
     let settled = false;
     const channel = new BroadcastChannel(CHANNEL);
@@ -220,29 +220,30 @@ export async function connect(opts: ConnectOptions): Promise<TokenResult> {
  * - Sinon (aucun flux en attente) : renvoie null.
  */
 export async function handleRedirectCallback(): Promise<TokenResult | null> {
-  const raw = sessionStorage.getItem(SS_KEY);
-  if (!raw) return null;
-
   const q = new URLSearchParams(window.location.search);
   const code = q.get('code');
   const state = q.get('state');
   const error = q.get('error');
   if (!code && !error) return null;
 
-  sessionStorage.removeItem(SS_KEY);
-  const pending: PendingState = JSON.parse(raw);
-  if (state && pending.state && state !== pending.state) throw new Error('state_mismatch');
-
-  // Mode popup : relayer à l'ouvreur (qui détient le code_verifier) puis fermer.
-  if (pending.mode === 'popup') {
+  // Détection fiable de la popup : window.name est fixé par window.open() et
+  // persiste à travers le login interactif (contrairement à window.opener, coupé
+  // par COOP). Dans ce cas on relaie le code+state (lus dans l'URL) à l'ouvreur,
+  // qui valide le state et détient le code_verifier.
+  if (window.name === 'bnaas_connect') {
     const channel = new BroadcastChannel(CHANNEL);
-    channel.postMessage({ type: 'bnaas_connect_relay', state: pending.state, code: code || undefined, error: error || undefined });
+    channel.postMessage({ type: 'bnaas_connect_relay', state: state || undefined, code: code || undefined, error: error || undefined });
     channel.close();
     try { window.close(); } catch { /* ignore */ }
     return null;
   }
 
-  // Mode redirection pleine page : échanger ici.
+  // Sinon : redirection pleine page. On a besoin du code_verifier persisté.
+  const raw = sessionStorage.getItem(SS_KEY);
+  if (!raw) return null;
+  sessionStorage.removeItem(SS_KEY);
+  const pending: PendingState = JSON.parse(raw);
+  if (state && pending.state && state !== pending.state) throw new Error('state_mismatch');
   if (error) throw new Error(error);
   return exchange({
     apiUrl: pending.apiUrl, code: code as string, codeVerifier: pending.codeVerifier,

@@ -1,6 +1,6 @@
 {
   "name": "@chaireblockchainulaval/bnaas-connect",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "SDK « Se connecter avec BNAAS » — obtention d'un jeton d'identité notariale via OAuth 2.0 + PKCE (popup ou redirection).",
   "type": "module",
   "main": "./dist/index.cjs",
