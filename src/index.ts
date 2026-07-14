@@ -148,6 +148,9 @@ export async function connect(opts: ConnectOptions): Promise<TokenResult> {
     return new Promise<TokenResult>(() => {});
   }
 
+  // Purger un éventuel résultat périmé d'un flux précédent.
+  try { localStorage.removeItem(RESULT_KEY); } catch { /* ignore */ }
+
   const popup = window.open(authorizeUrl, 'bnaas_connect', 'width=460,height=640');
   if (!popup) {
     persistRedirect();
@@ -160,7 +163,8 @@ export async function connect(opts: ConnectOptions): Promise<TokenResult> {
     const cleanup = () => {
       window.removeEventListener('message', onMessage);
       window.removeEventListener('storage', onStorage);
-      clearInterval(closedTimer);
+      clearInterval(pollTimer);
+      clearTimeout(timeoutId);
     };
 
     const finish = async (payload: RelayPayload) => {
@@ -195,20 +199,26 @@ export async function connect(opts: ConnectOptions): Promise<TokenResult> {
     window.addEventListener('message', onMessage);
     window.addEventListener('storage', onStorage);
 
-    // Fallback robuste : relire localStorage à chaque tick, indépendamment de
-    // l'événement storage (qui peut ne pas traverser) ET de popup.closed (peu
-    // fiable quand COOP neutralise le handle de la popup).
-    const closedTimer = setInterval(() => {
+    // popup.closed est inutilisable sous COOP : il renvoie true dès l'ouverture
+    // (handle neutralisé), ce qui provoquait un rejet prématuré. On ne s'y fie
+    // donc pas. Le succès = résultat dans localStorage (poll + événement storage) ;
+    // l'abandon = timeout généreux couvrant login + consentement.
+    const pollTimer = setInterval(() => {
       if (settled) return;
       try {
         const raw = localStorage.getItem(RESULT_KEY);
         if (raw) {
           const d: RelayPayload = JSON.parse(raw);
-          if (d.state === state) { void finish({ code: d.code, error: d.error }); return; }
+          if (d.state === state) { void finish({ code: d.code, error: d.error }); }
         }
       } catch { /* ignore */ }
-      if (popup.closed) { cleanup(); reject(new Error('popup_closed')); }
     }, 400);
+
+    const timeoutId = setTimeout(() => {
+      if (settled) return;
+      settled = true; cleanup();
+      reject(new Error('timeout'));
+    }, 300000);
   });
 }
 
