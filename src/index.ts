@@ -2,18 +2,18 @@
  * @chaireblockchainulaval/bnaas-connect
  * SDK « Se connecter avec BNAAS » — OAuth 2.0 Authorization Code + PKCE.
  *
- * Permet à une application tierce d'obtenir un jeton d'identité notariale sans
- * copier-coller. Aucune dépendance (crypto.subtle natif). Navigateur uniquement.
+ * Obtient un jeton d'identité notariale sans copier-coller. Aucune dépendance
+ * (crypto.subtle natif). Navigateur uniquement.
  *
- * Modes de livraison du code :
- *  - Popup + postMessage (chemin rapide, session BNAAS déjà active).
- *  - Repli redirection : si la popup a dû faire un login interactif, la politique
- *    COOP du fournisseur d'identité coupe window.opener. La popup retombe alors
- *    sur le redirect_uri (même origine que l'appli ouvrante) ; le SDK y relaie le
- *    code via BroadcastChannel à l'instance connect() de l'ouvreur.
+ * Livraison du code à la fenêtre ouvrante :
+ *  - Chemin rapide : postMessage depuis le portail (session BNAAS déjà active).
+ *  - Repli robuste : si un login interactif a eu lieu, la politique COOP du
+ *    fournisseur d'identité coupe window.opener ET le navigateur efface
+ *    window.name. La popup retombe alors sur le redirect_uri (même origine que
+ *    l'appli ouvrante) et communique le code via localStorage + l'événement
+ *    « storage » — canal fiable entre fenêtres de même origine, qui survit à
+ *    l'aller-retour cross-origin.
  *    → l'appli doit appeler handleRedirectCallback() sur sa page de redirect_uri.
- *  - Redirection pleine page (preferRedirect ou popup bloquée) : handleRedirectCallback()
- *    renvoie directement le jeton.
  */
 
 export interface ConnectOptions {
@@ -40,10 +40,8 @@ const DEFAULTS = {
   apiUrl: 'https://api.test.bnaas.ca',
 };
 
-const SS_KEY = 'bnaas_connect_pending';
-const CHANNEL = 'bnaas_connect';
-
-type Mode = 'popup' | 'redirect';
+const SS_KEY = 'bnaas_connect_pending';   // sessionStorage : mode redirection pleine page
+const RESULT_KEY = 'bnaas_connect_result'; // localStorage : relais popup → ouvreur
 
 interface PendingState {
   state: string;
@@ -51,7 +49,13 @@ interface PendingState {
   clientId: string;
   redirectUri: string;
   apiUrl: string;
-  mode: Mode;
+}
+
+interface RelayPayload {
+  state?: string;
+  code?: string;
+  error?: string;
+  ts?: number;
 }
 
 /* ----------------------------- Utilitaires PKCE ---------------------------- */
@@ -115,21 +119,13 @@ function buildAuthorizeUrl(o: { portalUrl: string; clientId: string; redirectUri
   return `${o.portalUrl}/connect?${qs.toString()}`;
 }
 
-interface RelayMessage {
-  type?: string;
-  state?: string;
-  code?: string;
-  error?: string;
-}
-
 /* --------------------------------- API SDK --------------------------------- */
 
 /**
  * Lance le flux et résout avec { token, expires_at }.
- * Ouvre une popup ; si elle est bloquée, bascule en redirection pleine page.
- * Si la popup a dû faire un login interactif (opener coupé par COOP), le code est
- * récupéré via BroadcastChannel — à condition que la page redirect_uri appelle
- * handleRedirectCallback().
+ * Popup par défaut ; repli redirection si la popup est bloquée. Le cas « login
+ * interactif » (COOP) est couvert via localStorage, à condition que la page
+ * redirect_uri appelle handleRedirectCallback().
  */
 export async function connect(opts: ConnectOptions): Promise<TokenResult> {
   const cfg = { ...DEFAULTS, ...opts };
@@ -140,84 +136,89 @@ export async function connect(opts: ConnectOptions): Promise<TokenResult> {
   const authorizeUrl = buildAuthorizeUrl({ portalUrl: cfg.portalUrl, clientId: cfg.clientId, redirectUri: cfg.redirectUri, state, codeChallenge });
   const portalOrigin = new URL(cfg.portalUrl).origin;
 
-  const persist = (mode: Mode) => {
-    const pending: PendingState = { state, codeVerifier, clientId: cfg.clientId, redirectUri: cfg.redirectUri, apiUrl: cfg.apiUrl, mode };
+  // Redirection pleine page (même fenêtre) : persister pour l'échange au retour.
+  const persistRedirect = () => {
+    const pending: PendingState = { state, codeVerifier, clientId: cfg.clientId, redirectUri: cfg.redirectUri, apiUrl: cfg.apiUrl };
     sessionStorage.setItem(SS_KEY, JSON.stringify(pending));
   };
 
-  // Redirection pleine page explicite.
   if (cfg.preferRedirect) {
-    persist('redirect');
+    persistRedirect();
     window.location.href = authorizeUrl;
     return new Promise<TokenResult>(() => {});
   }
 
   const popup = window.open(authorizeUrl, 'bnaas_connect', 'width=460,height=640');
-
-  // Popup bloquée → repli redirection pleine page.
   if (!popup) {
-    persist('redirect');
+    persistRedirect();
     window.location.href = authorizeUrl;
     return new Promise<TokenResult>(() => {});
   }
 
-  // Popup ouverte. Pas de persistance nécessaire : en cas de repli, la popup
-  // relaie le code lu dans son URL (détection via window.name), et c'est cette
-  // instance-ci qui valide le state et détient le code_verifier.
   return new Promise<TokenResult>((resolve, reject) => {
     let settled = false;
-    const channel = new BroadcastChannel(CHANNEL);
     const cleanup = () => {
       window.removeEventListener('message', onMessage);
-      channel.removeEventListener('message', onRelay);
-      channel.close();
+      window.removeEventListener('storage', onStorage);
       clearInterval(closedTimer);
     };
 
-    const complete = async (code: string) => {
+    const finish = async (payload: RelayPayload) => {
+      if (settled) return;
       settled = true; cleanup();
       try { popup.close(); } catch { /* ignore */ }
+      try { localStorage.removeItem(RESULT_KEY); } catch { /* ignore */ }
+      if (payload.error) { reject(new Error(payload.error)); return; }
       try {
-        resolve(await exchange({ apiUrl: cfg.apiUrl, code, codeVerifier, clientId: cfg.clientId, redirectUri: cfg.redirectUri }));
+        resolve(await exchange({ apiUrl: cfg.apiUrl, code: payload.code as string, codeVerifier, clientId: cfg.clientId, redirectUri: cfg.redirectUri }));
       } catch (e) { reject(e as Error); }
     };
 
-    // Chemin rapide : postMessage direct depuis le portail (opener intact).
+    // Chemin rapide : postMessage direct du portail (opener intact).
     const onMessage = (event: MessageEvent) => {
       if (event.origin !== portalOrigin) return;
-      const data = event.data as RelayMessage;
-      if (!data || data.type !== 'bnaas_connect') return;
-      if (data.state && data.state !== state) return;
-      if (settled) return;
-      if (data.error) { settled = true; cleanup(); reject(new Error(data.error)); return; }
-      void complete(data.code as string);
+      const d = event.data as RelayPayload & { type?: string };
+      if (!d || d.type !== 'bnaas_connect') return;
+      if (d.state && d.state !== state) return;
+      void finish({ code: d.code, error: d.error });
     };
 
-    // Repli : relais du code depuis la page redirect_uri (même origine que l'ouvreur).
-    const onRelay = (event: MessageEvent) => {
-      const data = event.data as RelayMessage;
-      if (!data || data.type !== 'bnaas_connect_relay') return;
-      if (data.state !== state) return;
-      if (settled) return;
-      if (data.error) { settled = true; cleanup(); reject(new Error(data.error)); return; }
-      void complete(data.code as string);
+    // Repli COOP : relais via localStorage depuis la page redirect_uri.
+    const onStorage = (e: StorageEvent) => {
+      if (e.key !== RESULT_KEY || !e.newValue) return;
+      let d: RelayPayload;
+      try { d = JSON.parse(e.newValue); } catch { return; }
+      if (d.state !== state) return;
+      void finish({ code: d.code, error: d.error });
     };
 
     window.addEventListener('message', onMessage);
-    channel.addEventListener('message', onRelay);
+    window.addEventListener('storage', onStorage);
 
     const closedTimer = setInterval(() => {
-      if (popup.closed && !settled) { cleanup(); reject(new Error('popup_closed')); }
+      if (settled) return;
+      if (popup.closed) {
+        // Dernière chance : le résultat a pu être écrit juste avant la fermeture.
+        try {
+          const raw = localStorage.getItem(RESULT_KEY);
+          if (raw) {
+            const d: RelayPayload = JSON.parse(raw);
+            if (d.state === state) { void finish({ code: d.code, error: d.error }); return; }
+          }
+        } catch { /* ignore */ }
+        cleanup();
+        reject(new Error('popup_closed'));
+      }
     }, 500);
   });
 }
 
 /**
  * À appeler au chargement de la page de callback (redirect_uri).
- * - Si la fenêtre est une popup en repli : relaie le code à l'ouvreur puis se ferme
- *   (renvoie null — c'est l'instance connect() de l'ouvreur qui résout).
- * - Si redirection pleine page : échange et renvoie { token, expires_at }.
- * - Sinon (aucun flux en attente) : renvoie null.
+ * - Redirection pleine page (même fenêtre) : échange et renvoie { token, expires_at }.
+ * - Popup (fenêtre séparée) : relaie le code à l'ouvreur via localStorage puis se
+ *   ferme (renvoie null — c'est connect() de l'ouvreur qui résout).
+ * - Aucun flux en attente : renvoie null.
  */
 export async function handleRedirectCallback(): Promise<TokenResult | null> {
   const q = new URLSearchParams(window.location.search);
@@ -226,29 +227,25 @@ export async function handleRedirectCallback(): Promise<TokenResult | null> {
   const error = q.get('error');
   if (!code && !error) return null;
 
-  // Détection fiable de la popup : window.name est fixé par window.open() et
-  // persiste à travers le login interactif (contrairement à window.opener, coupé
-  // par COOP). Dans ce cas on relaie le code+state (lus dans l'URL) à l'ouvreur,
-  // qui valide le state et détient le code_verifier.
-  if (window.name === 'bnaas_connect') {
-    const channel = new BroadcastChannel(CHANNEL);
-    channel.postMessage({ type: 'bnaas_connect_relay', state: state || undefined, code: code || undefined, error: error || undefined });
-    channel.close();
-    try { window.close(); } catch { /* ignore */ }
-    return null;
+  // Redirection pleine page : le code_verifier est dans le sessionStorage de CETTE fenêtre.
+  const raw = sessionStorage.getItem(SS_KEY);
+  if (raw) {
+    sessionStorage.removeItem(SS_KEY);
+    const pending: PendingState = JSON.parse(raw);
+    if (state && pending.state && state !== pending.state) throw new Error('state_mismatch');
+    if (error) throw new Error(error);
+    return exchange({
+      apiUrl: pending.apiUrl, code: code as string, codeVerifier: pending.codeVerifier,
+      clientId: pending.clientId, redirectUri: pending.redirectUri,
+    });
   }
 
-  // Sinon : redirection pleine page. On a besoin du code_verifier persisté.
-  const raw = sessionStorage.getItem(SS_KEY);
-  if (!raw) return null;
-  sessionStorage.removeItem(SS_KEY);
-  const pending: PendingState = JSON.parse(raw);
-  if (state && pending.state && state !== pending.state) throw new Error('state_mismatch');
-  if (error) throw new Error(error);
-  return exchange({
-    apiUrl: pending.apiUrl, code: code as string, codeVerifier: pending.codeVerifier,
-    clientId: pending.clientId, redirectUri: pending.redirectUri,
-  });
+  // Popup : relayer à l'ouvreur (même origine) via localStorage, puis fermer.
+  const payload: RelayPayload = { state: state || undefined, code: code || undefined, error: error || undefined, ts: Date.now() };
+  try { localStorage.setItem(RESULT_KEY, JSON.stringify(payload)); } catch { /* ignore */ }
+  // Laisser le temps à l'événement storage de partir avant de fermer.
+  setTimeout(() => { try { window.close(); } catch { /* ignore */ } }, 100);
+  return null;
 }
 
 export default { connect, handleRedirectCallback };
