@@ -84,9 +84,11 @@ async function obtenirJeton() {
 }
 ```
 
-**Page de callback.** La page servie sur le `redirect_uri` doit gérer le cas où le
-notaire n'a pas de session BNAAS active (la popup effectue alors une authentification
-interactive et retombe en redirection pleine page) :
+**Page de callback.** La page servie sur le `redirect_uri` doit appeler
+`handleRedirectCallback()` au chargement. C'est nécessaire lorsque le notaire n'a pas de
+session BNAAS active : la popup effectue alors une authentification interactive, puis
+revient sur le `redirect_uri` et **relaie le code à la fenêtre d'origine** (la popup se
+referme d'elle-même). Cela couvre aussi le repli redirection pleine page (popup bloquée) :
 
 ```ts
 import { handleRedirectCallback } from '@chaireblockchainulaval/bnaas-connect';
