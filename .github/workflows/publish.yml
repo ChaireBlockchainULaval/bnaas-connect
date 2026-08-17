@@ -19,10 +19,11 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           registry-url: https://registry.npmjs.org
 
-      # Trusted Publishing exige une version récente du CLI npm.
+      # Trusted Publishing exige un npm récent (>= 11.5.1). Node 24 embarque déjà
+      # npm 11.x ; on force la dernière version par sûreté (compatible Node 24).
       - name: Mettre npm à jour
         run: npm install -g npm@latest
 
