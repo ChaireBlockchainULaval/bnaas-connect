@@ -8,7 +8,7 @@ d'identité notariale** via OAuth 2.0 (Authorization Code + PKCE), sans copier-c
   login interactif est nécessaire.
 
 > **Dépôt source de vérité.** Ce dépôt est la référence publique du SDK. Les applications
-> tierces l'installent depuis GitHub Packages ; toute copie locale ailleurs (ex. dans le
+> tierces l'installent depuis le npm public ; toute copie locale ailleurs (ex. dans le
 > portail, à des fins de test) n'est pas maintenue et peut diverger.
 >
 > Pour intégrer en tant que partenaire, voir **[docs/GUIDE-PARTENAIRE.md](docs/GUIDE-PARTENAIRE.md)**.
@@ -22,17 +22,9 @@ Ton application doit être **enregistrée** :
 
 BNAAS te communique : ton `client_id`, l'URL du portail et l'URL du Gateway.
 
-## Installation (GitHub Packages)
+## Installation
 
-Le paquet est publié sur **GitHub Packages** sous le scope `@chaireblockchainulaval`.
-Configure `.npmrc` à la racine du projet consommateur :
-
-```
-@chaireblockchainulaval:registry=https://npm.pkg.github.com
-//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}
-```
-
-Puis :
+Le paquet est **public sur npm** — aucun token ni `.npmrc` requis :
 
 ```bash
 npm install @chaireblockchainulaval/bnaas-connect
@@ -113,9 +105,10 @@ npm run build      # génère dist/ (ESM + CJS + types) via tsup
 
 ```bash
 npm run build
-npm publish        # registre défini dans publishConfig (GitHub Packages)
+npm publish        # registre + accès public définis dans publishConfig (npm)
 ```
-Nécessite un `GITHUB_TOKEN` avec le scope `write:packages` configuré dans `.npmrc`.
+Nécessite d'être connecté à npm (`npm login`) avec un compte membre de l'organisation
+npm `chaireblockchainulaval`, ou un token npm (variable `NODE_AUTH_TOKEN` en CI).
 
 ## API
 

@@ -52,15 +52,7 @@ redirect_uri non enregistrée est rejetée par le Gateway.
 
 ## Étape 3 — Installation du SDK
 
-Le SDK est publié sur **GitHub Packages** sous le scope `@chaireblockchainulaval`.
-Un fichier `.npmrc` doit être ajouté à la racine du projet :
-
-```
-@chaireblockchainulaval:registry=https://npm.pkg.github.com
-//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}
-```
-
-(`GITHUB_TOKEN` : un jeton GitHub avec le scope `read:packages`.)
+Le SDK est **public sur npm** — aucun token ni `.npmrc` requis :
 
 ```shell
 npm install @chaireblockchainulaval/bnaas-connect
