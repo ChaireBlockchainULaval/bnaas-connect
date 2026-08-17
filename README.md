@@ -103,12 +103,17 @@ npm run build      # génère dist/ (ESM + CJS + types) via tsup
 
 ## Publication (mainteneurs BNAAS)
 
+**CI (recommandé) — Trusted Publishing (OIDC).** Créer une **Release GitHub** déclenche
+`.github/workflows/publish.yml`, qui publie sans aucun token stocké (auth par OIDC,
+provenance automatique). Prérequis unique : déclarer ce dépôt + ce workflow comme
+*Trusted Publisher* sur la page npm du paquet (Settings → Trusted Publisher).
+
+**Manuel (dépannage).**
 ```bash
 npm run build
-npm publish        # registre + accès public définis dans publishConfig (npm)
+npm publish        # registre + accès public définis dans publishConfig
 ```
-Nécessite d'être connecté à npm (`npm login`) avec un compte membre de l'organisation
-npm `chaireblockchainulaval`, ou un token npm (variable `NODE_AUTH_TOKEN` en CI).
+Nécessite d'être connecté à npm (compte membre de l'org `chaireblockchainulaval`).
 
 ## API
 
