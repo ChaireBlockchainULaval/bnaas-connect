@@ -7,24 +7,21 @@ d'identité notariale** via OAuth 2.0 (Authorization Code + PKCE), sans copier-c
 - Popup par défaut, **repli automatique en redirection** si la popup est bloquée ou si un
   login interactif est nécessaire.
 
-> **Dépôt source de vérité.** Ce dépôt est la référence publique du SDK. Les applications
-> tierces l'installent depuis le npm public ; toute copie locale ailleurs (ex. dans le
-> portail, à des fins de test) n'est pas maintenue et peut diverger.
->
-> Pour intégrer en tant que partenaire, voir **[docs/GUIDE-PARTENAIRE.md](docs/GUIDE-PARTENAIRE.md)**.
+> Guide d'intégration complet : **[docs/GUIDE-PARTENAIRE.md](docs/GUIDE-PARTENAIRE.md)**.
+> Contribution / publication du paquet (mainteneurs BNAAS) : **[CONTRIBUTING.md](CONTRIBUTING.md)**.
 
 ## Prérequis (fournis par BNAAS)
 
-Ton application doit être **enregistrée** :
+Ton application doit être **enregistrée** auprès de BNAAS :
 - app registration Entra avec les rôles requis ;
 - entrée côté BNAAS (`client_id` = app id Entra) avec l'**allowlist** des origines et
   des `redirect_uri`.
 
-BNAAS te communique : ton `client_id`, l'URL du portail et l'URL du Gateway.
+BNAAS te communique alors : ton `client_id`, l'URL du portail et l'URL du Gateway.
 
 ## Installation
 
-Le paquet est **public sur npm** — aucun token ni `.npmrc` requis :
+Paquet **public sur npm** — aucun token ni `.npmrc` requis :
 
 ```bash
 npm install @chaireblockchainulaval/bnaas-connect
@@ -35,89 +32,61 @@ npm install @chaireblockchainulaval/bnaas-connect
 ```ts
 import { connect } from '@chaireblockchainulaval/bnaas-connect';
 
-async function onObtenirJeton() {
+async function obtenirJeton() {
   try {
     const { token, expires_at } = await connect({
       clientId:    'APP_ID_ENTRA_DU_TIERS',
-      redirectUri: 'https://mon-appli.example/callback', // dans l'allowlist
-      portalUrl:   'https://app.test.bnaas.ca',          // optionnel (défaut test)
-      apiUrl:      'https://api.test.bnaas.ca',           // optionnel (défaut test)
+      redirectUri: 'https://mon-appli.example/callback', // doit être dans l'allowlist
+      portalUrl:   'https://app.test.bnaas.ca',          // optionnel (défaut : test)
+      apiUrl:      'https://api.test.bnaas.ca',           // optionnel (défaut : test)
     });
-    // token : jeton d'identité notariale (15 min, usage unique)
+    // token : jeton d'identité notariale (15 min, usage unique).
     // À placer dans l'en-tête X-Notarial-Identity-Token des appels notariaux.
   } catch (e) {
-    if ((e as Error).message === 'access_denied') { /* refusé par le notaire */ }
+    if ((e as Error).message === 'access_denied') { /* le notaire a refusé */ }
     else if ((e as Error).message === 'popup_closed') { /* fenêtre fermée */ }
     else { /* autre erreur */ }
   }
 }
 ```
 
-## Page de callback (obligatoire pour couvrir tous les cas)
+## Page de callback (à faire une fois)
 
 Sur la page servie à ton `redirectUri`, appelle `handleRedirectCallback()` au chargement.
-C'est nécessaire dans deux situations :
-- **Notaire sans session BNAAS active** : la popup fait un login interactif Microsoft, ce
-  qui coupe le lien avec la fenêtre d'origine (COOP). La popup retombe alors sur le
-  `redirectUri` et `handleRedirectCallback()` **relaie le code** à la fenêtre d'origine,
-  puis se referme. `connect()` s'y résout normalement — rien de plus à faire.
-- **Popup bloquée / `preferRedirect`** : redirection pleine page ; `handleRedirectCallback()`
-  renvoie directement `{ token, expires_at }`.
+C'est ce qui couvre le cas où le notaire **n'a pas de session BNAAS active** (login
+interactif dans la popup, puis relais du code à la fenêtre d'origine) ainsi que le repli
+en redirection pleine page :
 
 ```ts
-import { connect, handleRedirectCallback } from '@chaireblockchainulaval/bnaas-connect';
+import { handleRedirectCallback } from '@chaireblockchainulaval/bnaas-connect';
 
+// Au chargement de la page redirect_uri :
 const result = await handleRedirectCallback();
 if (result) {
-  const { token, expires_at } = result;
+  // Redirection pleine page : result = { token, expires_at }.
+  // (Cas popup : le code est relayé automatiquement à la fenêtre d'origine,
+  //  cette page se referme seule — rien de plus à faire.)
 }
+```
 
-// Pour forcer le mode redirection dès le départ :
+Pour forcer le mode redirection dès le départ :
 
 ```ts
-import { connect, handleRedirectCallback } from '@chaireblockchainulaval/bnaas-connect';
-
-const result = await handleRedirectCallback();
-if (result) {
-  const { token, expires_at } = result;
-}
-
-// Pour forcer le mode redirection dès le départ :
 await connect({ clientId, redirectUri, preferRedirect: true });
 ```
 
 ## Sécurité
 
-- **PKCE (S256)** : le `code_verifier` ne quitte jamais l'application.
-- **`state`** anti-CSRF vérifié à la réception.
+- **PKCE (S256)** : le `code_verifier` ne quitte jamais ton application.
+- **`state`** anti-CSRF, vérifié à la réception.
 - **Origine vérifiée** : en popup, seuls les messages du portail sont acceptés.
-- Le **jeton ne transite jamais** dans le `postMessage` — uniquement le code court, à
+- Le **jeton ne transite jamais** dans le canal de retour — uniquement un code court, à
   usage unique, échangé ensuite contre le jeton.
-
-## Développement
-
-```bash
-npm install
-npm run build      # génère dist/ (ESM + CJS + types) via tsup
-```
-
-## Publication (mainteneurs BNAAS)
-
-**CI (recommandé) — Trusted Publishing (OIDC).** Créer une **Release GitHub** déclenche
-`.github/workflows/publish.yml`, qui publie sans aucun token stocké (auth par OIDC,
-provenance automatique). Prérequis unique : déclarer ce dépôt + ce workflow comme
-*Trusted Publisher* sur la page npm du paquet (Settings → Trusted Publisher).
-
-**Manuel (dépannage).**
-```bash
-npm run build
-npm publish        # registre + accès public définis dans publishConfig
-```
-Nécessite d'être connecté à npm (compte membre de l'org `chaireblockchainulaval`).
 
 ## API
 
 - `connect(options): Promise<{ token, expires_at }>`
 - `handleRedirectCallback(): Promise<{ token, expires_at } | null>`
 
-Options : `clientId`, `redirectUri` (requis) ; `portalUrl`, `apiUrl`, `preferRedirect` (optionnels).
+**Options** : `clientId`, `redirectUri` (requis) ; `portalUrl`, `apiUrl`, `preferRedirect`
+(optionnels).
