@@ -34,14 +34,16 @@ import { connect } from '@chaireblockchainulaval/bnaas-connect';
 
 async function obtenirJeton() {
   try {
-    const { token, expires_at } = await connect({
+    const { token, expires_at, sub } = await connect({
       clientId:    'APP_ID_ENTRA_DU_TIERS',
       redirectUri: 'https://mon-appli.example/callback', // doit être dans l'allowlist
       portalUrl:   'https://app.test.bnaas.ca',          // optionnel (défaut : test)
       apiUrl:      'https://api.test.bnaas.ca',           // optionnel (défaut : test)
     });
     // token : jeton d'identité notariale (15 min, usage unique).
-    // À placer dans l'en-tête X-Notarial-Identity-Token des appels notariaux.
+    //         À placer dans l'en-tête X-Notarial-Identity-Token des appels notariaux.
+    // sub   : identifiant stable et global du notaire — sert à lier/dédoublonner
+    //         le compte côté ton application (à indexer, jamais le token).
   } catch (e) {
     if ((e as Error).message === 'access_denied') { /* le notaire a refusé */ }
     else if ((e as Error).message === 'popup_closed') { /* fenêtre fermée */ }
@@ -85,8 +87,14 @@ await connect({ clientId, redirectUri, preferRedirect: true });
 
 ## API
 
-- `connect(options): Promise<{ token, expires_at }>`
-- `handleRedirectCallback(): Promise<{ token, expires_at } | null>`
+- `connect(options): Promise<{ token, expires_at, sub }>`
+- `handleRedirectCallback(): Promise<{ token, expires_at, sub } | null>`
 
 **Options** : `clientId`, `redirectUri` (requis) ; `portalUrl`, `apiUrl`, `preferRedirect`
 (optionnels).
+
+**Résultat** :
+- `token` — jeton d'identité notariale (15 min, usage unique) ;
+- `expires_at` — expiration ISO 8601 ;
+- `sub` — identifiant stable et global du notaire, à utiliser pour lier/dédoublonner les
+  comptes côté application (à indexer, jamais le `token`).

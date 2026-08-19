@@ -29,10 +29,18 @@ export interface ConnectOptions {
   preferRedirect?: boolean;
 }
 
-/** Jeton d'identité notariale (15 min, usage unique). */
 export interface TokenResult {
+  /** Jeton d'identité notariale opaque (`bnaas_nit_…`), 15 min, usage unique. */
   token: string;
+  /** Expiration ISO 8601 du jeton. */
   expires_at: string;
+  /**
+   * Identifiant **stable et global** du notaire (son identité Fabric, ex.
+   * `notaire_965d4225`). À utiliser pour **lier / dédoublonner** les comptes notaires
+   * côté application cliente. Contrairement au `token` (éphémère, usage unique), `sub`
+   * est constant dans le temps — c'est lui qu'on indexe, jamais le token.
+   */
+  sub: string;
 }
 
 const DEFAULTS = {

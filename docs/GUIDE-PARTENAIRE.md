@@ -111,6 +111,11 @@ Content-Type: application/json
   parallèle : le jeton notarial atteste l'identité du notaire, le jeton Bearer atteste
   l'identité de l'application.
 
+**Lier le compte notaire (`sub`).** `connect()` renvoie aussi `sub`, l'identifiant
+**stable et global** du notaire. C'est la valeur à stocker/indexer côté application pour
+rattacher un notaire à un compte et éviter les doublons. N'utilise **jamais** le `token`
+comme identifiant (il est éphémère et à usage unique) — seul `sub` est constant.
+
 ## Sécurité et bonnes pratiques
 
 * Le SDK gère PKCE (S256) et la protection anti-CSRF (`state`) ; le flux ne doit pas être
