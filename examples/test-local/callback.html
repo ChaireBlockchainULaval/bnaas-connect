@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Retour BNAAS — test SDK</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 44rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+  pre { background: #f4f4f4; padding: .75rem; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
+  .ok { color: #0a6b2d; } .ko { color: #a11; }
+</style>
+</head>
+<body>
+<h1>Retour BNAAS</h1>
+<p id="etat">Traitement…</p>
+<pre id="sortie" hidden></pre>
+<p><a href="/">← Retour à la page de test</a></p>
+<script type="module">
+  import { handleRedirectCallback } from '/sdk.js';
+  const etat = document.getElementById('etat');
+  const sortie = document.getElementById('sortie');
+  const montrer = (obj) => { sortie.hidden = false; sortie.textContent = JSON.stringify(obj, null, 2); };
+  try {
+    const r = await handleRedirectCallback();
+    if (r) {
+      etat.className = 'ok';
+      etat.textContent = 'Redirection pleine page : jeton obtenu.';
+      montrer({ ...r, token: r.token.slice(0, 14) + '… (masqué)' });
+    } else {
+      etat.textContent = 'Popup : retour relayé à la fenêtre d\'origine. Cette fenêtre va se fermer.';
+    }
+  } catch (e) {
+    etat.className = 'ko';
+    etat.textContent = 'Erreur (redirection pleine page).';
+    montrer({ code: e.code ?? e.message, description: e.description, status: e.status });
+  }
+</script>
+</body>
+</html>

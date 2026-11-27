@@ -22,7 +22,8 @@
     "build": "tsup",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "prepublishOnly": "npm run typecheck && npm test && npm run build"
+    "prepublishOnly": "npm run typecheck && npm test && npm run build",
+    "test:navigateur": "npm run build && node examples/test-local/server.mjs"
   },
   "keywords": [
     "bnaas",
