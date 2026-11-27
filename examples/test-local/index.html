@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Test SDK bnaas-connect</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 52rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; color: #1a1a1a; }
+  fieldset { border: 1px solid #ccc; border-radius: 6px; margin: 0 0 1rem; padding: .75rem 1rem; }
+  label { display: block; margin: .35rem 0; }
+  input[type=text], input[type=number], textarea { width: 100%; box-sizing: border-box; font: inherit; padding: .3rem; }
+  textarea { font-family: ui-monospace, monospace; font-size: .9rem; min-height: 8rem; }
+  button { font: inherit; padding: .4rem .9rem; margin: .2rem .3rem .2rem 0; cursor: pointer; }
+  button.principal { font-weight: 600; }
+  pre { background: #f4f4f4; padding: .75rem; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
+  .ok { color: #0a6b2d; } .ko { color: #a11; }
+  .entree { border-top: 1px solid #ddd; padding-top: .5rem; margin-top: .5rem; }
+  small { color: #555; }
+</style>
+</head>
+<body>
+<h1>Test du SDK bnaas-connect 1.x</h1>
+<p><small>Page locale (http://localhost:8765) qui appelle le SDK compilé contre l'environnement
+de test BNAAS. Le jeton obtenu n'est pas utilisé : aucune écriture n'a lieu. Voir
+<code>examples/test-local/README.md</code> pour les scénarios.</small></p>
+
+<fieldset>
+  <legend>Configuration</legend>
+  <label>client_id <input type="text" id="clientId" value="bnaas-smoke"></label>
+  <label>redirect_uri <input type="text" id="redirectUri" value="http://localhost:8765/callback"></label>
+  <label>authUrl <input type="text" id="authUrl" value="https://auth.test.bnaas.ca"></label>
+  <label>apiUrl <input type="text" id="apiUrl" value="https://api.test.bnaas.ca"></label>
+  <label><input type="checkbox" id="forceReauth"> forceReauth (ressaisie du mot de passe)</label>
+  <label><input type="checkbox" id="preferRedirect"> preferRedirect (redirection pleine page au lieu de la popup)</label>
+  <label>timeoutMs <input type="number" id="timeoutMs" value="300000" min="1000" step="1000"></label>
+</fieldset>
+
+<fieldset>
+  <legend>Opération</legend>
+  <div>
+    <button type="button" data-preset="certify">certify_document</button>
+    <button type="button" data-preset="record">record_event (count 3)</button>
+    <button type="button" data-preset="close">close_dossier</button>
+    <button type="button" data-preset="invalide">opération invalide</button>
+  </div>
+  <label>Ou empreinte d'un vrai fichier : <input type="file" id="fichier"></label>
+  <textarea id="operation" spellcheck="false"></textarea>
+</fieldset>
+
+<button type="button" class="principal" id="lancer">Lancer connect()</button>
+<button type="button" id="vider">Vider le journal</button>
+
+<h2>Journal</h2>
+<div id="journal"><small>Aucun essai.</small></div>
+
+<script type="module">
+  import { connect } from '/sdk.js';
+
+  const $ = (id) => document.getElementById(id);
+  const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  const hasard = () => hex(crypto.getRandomValues(new Uint8Array(32)));
+  const ecrire = (op) => { $('operation').value = JSON.stringify(op, null, 2); };
+
+  const presets = {
+    certify: () => ({ type: 'certify_document', document: { name: 'Essai SDK 1.0.pdf', sha256: hasard() }, dossierId: 'D-ESSAI-1' }),
+    record: () => ({ type: 'record_event', dossierId: 'D-ESSAI-1', count: 3 }),
+    close: () => ({ type: 'close_dossier', dossierId: 'D-ESSAI-1' }),
+    invalide: () => ({ type: 'certify_document', document: { name: 'Mauvaise empreinte.pdf', sha256: 'abc' } }),
+  };
+  document.querySelectorAll('[data-preset]').forEach((b) => b.addEventListener('click', () => ecrire(presets[b.dataset.preset]())));
+  ecrire(presets.certify());
+
+  $('fichier').addEventListener('change', async () => {
+    const f = $('fichier').files[0];
+    if (!f) return;
+    const sha256 = hex(await crypto.subtle.digest('SHA-256', await f.arrayBuffer()));
+    ecrire({ type: 'certify_document', document: { name: f.name, sha256 } });
+  });
+
+  const journal = $('journal');
+  let premier = true;
+  const consigner = (classe, titre, obj) => {
+    if (premier) { journal.textContent = ''; premier = false; }
+    const d = document.createElement('div');
+    d.className = 'entree';
+    const t = document.createElement('div');
+    t.className = classe;
+    t.textContent = `${new Date().toLocaleTimeString()} — ${titre}`;
+    d.append(t);
+    if (obj) { const p = document.createElement('pre'); p.textContent = JSON.stringify(obj, null, 2); d.append(p); }
+    journal.prepend(d);
+  };
+  $('vider').addEventListener('click', () => { journal.innerHTML = '<small>Aucun essai.</small>'; premier = true; });
+
+  $('lancer').addEventListener('click', async () => {
+    let operation;
+    try { operation = JSON.parse($('operation').value); }
+    catch { consigner('ko', 'JSON de l\'opération illisible'); return; }
+    const debut = performance.now();
+    consigner('', 'connect() lancé', { type: operation.type });
+    try {
+      const r = await connect({
+        clientId: $('clientId').value.trim(),
+        redirectUri: $('redirectUri').value.trim(),
+        authUrl: $('authUrl').value.trim(),
+        apiUrl: $('apiUrl').value.trim(),
+        forceReauth: $('forceReauth').checked,
+        preferRedirect: $('preferRedirect').checked,
+        timeoutMs: Number($('timeoutMs').value) || undefined,
+        operation,
+      });
+      const restant = Math.round((Date.parse(r.expires_at) - Date.now()) / 1000);
+      consigner('ok', `Jeton obtenu en ${Math.round((performance.now() - debut) / 1000)} s (expire dans ~${restant} s)`, {
+        token: r.token.slice(0, 14) + '… (masqué)',
+        commence_par_bnaas_nit: r.token.startsWith('bnaas_nit_'),
+        expires_at: r.expires_at, sub: r.sub, consent_id: r.consent_id, operation: r.operation,
+      });
+    } catch (e) {
+      consigner('ko', `Erreur : ${e.code ?? e.message}`, { code: e.code ?? e.message, description: e.description, status: e.status });
+    }
+  });
+</script>
+</body>
+</html>

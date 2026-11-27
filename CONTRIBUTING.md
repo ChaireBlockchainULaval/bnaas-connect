@@ -10,6 +10,7 @@ npm install
 npm run typecheck  # tsc --noEmit
 npm test           # Vitest (test/*.test.ts) : opération, PKCE, state, échange, flux simulés
 npm run build      # génère dist/ (ESM + CJS + types) via tsup
+npm run test:navigateur  # page de test locale contre BNAAS test (examples/test-local/)
 ```
 
 Le code source est en TypeScript dans `src/` (`index.ts` : API publique et flux navigateur ;
@@ -48,8 +49,8 @@ typecheck + tests avant le build.
 `package.json` est déjà en `1.0.0` sur `main` : **ne pas** relancer `npm version`.
 
 1. **Prérequis** : `/connect/authorize` et l'échange V2 en service sur le Gateway de test ;
-   flux testé de bout en bout dans un vrai navigateur (popup → consentement → nit → appel
-   d'API) avec un client de test. La V1 reste active jusqu'à la bascule, donc 0.3.x et
+   flux testé de bout en bout dans un vrai navigateur : `npm run test:navigateur`, scénarios
+   de `examples/test-local/README.md`. La V1 reste active jusqu'à la bascule, donc 0.3.x et
    1.0.0 coexistent pendant la migration.
 2. Remplacer « non publiée » par la date dans `CHANGELOG.md` (PR), puis sur `main` à jour :
    ```bash
