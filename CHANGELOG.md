@@ -11,6 +11,8 @@ bascule du Gateway (`AUTH_V1_ENABLED=false` : `410 v1-retired`).
 
 ### Migrer depuis 0.3.x
 
+Guide pas à pas avec exemples avant/après : [docs/MIGRATION-1.0.md](docs/MIGRATION-1.0.md).
+
 1. **`operation` devient obligatoire** dans `connect()` : décrire l'opération à faire
    consentir (`type`, `document.{name,sha256}`, `dossierId`, `certId`, `count`,
    `preparationId` selon le type ; voir le README). Appeler `connect()` **juste avant

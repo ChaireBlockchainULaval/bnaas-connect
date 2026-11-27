@@ -4,6 +4,7 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:   # lancement à la demande (onglet Actions → CI → Run workflow)
 
 permissions:
   contents: read
