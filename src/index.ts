@@ -1,55 +1,55 @@
 /*
- * @chaireblockchainulaval/bnaas-connect
- * SDK « Se connecter avec BNAAS » — OAuth 2.0 Authorization Code + PKCE.
+ * @chaireblockchainulaval/bnaas-connect — V2
+ * Consentement du notaire à CHAQUE opération notariale (OAuth 2.0 Authorization Code + PKCE).
  *
- * Obtient un jeton d'identité notariale sans copier-coller. Aucune dépendance
- * (crypto.subtle natif). Navigateur uniquement.
+ * 1. connect({ operation }) ouvre une popup sur l'écran BNAAS
+ *    `https://auth.test.bnaas.ca/connect/authorize` (production : auth.bnaas.ca) ;
+ * 2. le notaire se connecte au besoin, puis autorise ou refuse cette opération précise ;
+ * 3. BNAAS renvoie la popup sur le `redirect_uri` de l'application (`?code&state` ou
+ *    `?error=access_denied&error_description=…&state`). Cette page appelle
+ *    handleRedirectCallback(), qui relaie le retour à la fenêtre ouvrante (même origine)
+ *    par localStorage — canal qui survit à la coupure de window.opener (COOP) ;
+ * 4. la fenêtre ouvrante vérifie `state`, puis échange le code contre un nit
+ *    (`POST /api/v1/oauth/token`) : 5 min, usage unique, lié à l'opération consentie.
  *
- * Livraison du code à la fenêtre ouvrante :
- *  - Chemin rapide : postMessage depuis le portail (session BNAAS déjà active).
- *  - Repli robuste : si un login interactif a eu lieu, la politique COOP du
- *    fournisseur d'identité coupe window.opener ET le navigateur efface
- *    window.name. La popup retombe alors sur le redirect_uri (même origine que
- *    l'appli ouvrante) et communique le code via localStorage + l'événement
- *    « storage » — canal fiable entre fenêtres de même origine, qui survit à
- *    l'aller-retour cross-origin.
- *    → l'appli doit appeler handleRedirectCallback() sur sa page de redirect_uri.
+ * Aucune dépendance (crypto.subtle natif). Navigateur uniquement.
  */
+import { makePkce, randomString } from './encoding';
+import { BnaasConnectError } from './errors';
+import { encodeOperation, type Operation } from './operation';
+import {
+  DEFAULT_API_URL, DEFAULT_AUTH_URL, buildAuthorizeUrl, exchangeCode, parseCallback, resolveCallback,
+  type CallbackParams, type TokenResult,
+} from './protocol';
+
+export { BnaasConnectError } from './errors';
+export { encodeOperation, normalizeOperation, OPERATION_RULES, MAX_COUNT } from './operation';
+export type { Operation, OperationDocument, OperationType } from './operation';
+export type { TokenResult, ConsentedOperation } from './protocol';
 
 export interface ConnectOptions {
-  /** App id Entra du tiers (= client_id enregistré côté BNAAS). */
+  /** `client_id` enregistré côté BNAAS. */
   clientId: string;
-  /** URL de callback autorisée (doit figurer dans l'allowlist BNAAS). */
+  /** URL de callback enregistrée (même origine que la page qui appelle connect()). */
   redirectUri: string;
-  /** Origine du portail BNAAS (émetteur du postMessage). */
-  portalUrl?: string;
-  /** URL du Gateway BNAAS (échange du code). */
+  /** Opération notariale à faire consentir (obligatoire). */
+  operation: Operation;
+  /** Exiger que le notaire ressaisisse son mot de passe (`force_reauth=1`). */
+  forceReauth?: boolean;
+  /** Origine de l'écran de consentement. Défaut : `https://auth.test.bnaas.ca`. */
+  authUrl?: string;
+  /** URL du Gateway (échange du code). Défaut : `https://api.test.bnaas.ca`. */
   apiUrl?: string;
-  /** Forcer le mode redirection (au lieu de la popup). */
+  /** Redirection pleine page au lieu de la popup (le résultat arrive via handleRedirectCallback). */
   preferRedirect?: boolean;
+  /** Délai d'abandon du flux en popup, en ms. Défaut : 300 000 (5 min). */
+  timeoutMs?: number;
 }
 
-export interface TokenResult {
-  /** Jeton d'identité notariale opaque (`bnaas_nit_…`), 15 min, usage unique. */
-  token: string;
-  /** Expiration ISO 8601 du jeton. */
-  expires_at: string;
-  /**
-   * Identifiant **stable et global** du notaire (son identité Fabric, ex.
-   * `notaire_965d4225`). À utiliser pour **lier / dédoublonner** les comptes notaires
-   * côté application cliente. Contrairement au `token` (éphémère, usage unique), `sub`
-   * est constant dans le temps — c'est lui qu'on indexe, jamais le token.
-   */
-  sub: string;
-}
-
-const DEFAULTS = {
-  portalUrl: 'https://app.test.bnaas.ca',
-  apiUrl: 'https://api.test.bnaas.ca',
-};
-
-const SS_KEY = 'bnaas_connect_pending';   // sessionStorage : mode redirection pleine page
+const SS_KEY = 'bnaas_connect_pending';    // sessionStorage : mode redirection pleine page
 const RESULT_KEY = 'bnaas_connect_result'; // localStorage : relais popup → ouvreur
+const MSG_TYPE = 'bnaas_connect';
+const DEFAULT_TIMEOUT_MS = 300_000;
 
 interface PendingState {
   state: string;
@@ -59,115 +59,61 @@ interface PendingState {
   apiUrl: string;
 }
 
-interface RelayPayload {
-  state?: string;
-  code?: string;
-  error?: string;
-  ts?: number;
+interface RelayPayload extends CallbackParams { ts?: number }
+
+function assertUrl(name: string, value: string): void {
+  try { new URL(value); } catch { throw new BnaasConnectError('invalid_config', `${name} : URL absolue attendue`); }
 }
-
-/* ----------------------------- Utilitaires PKCE ---------------------------- */
-
-function base64url(bytes: ArrayBuffer | Uint8Array): string {
-  const arr = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-  let str = '';
-  for (let i = 0; i < arr.length; i++) str += String.fromCharCode(arr[i]);
-  return btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-function randomString(length = 64): string {
-  const bytes = new Uint8Array(length);
-  crypto.getRandomValues(bytes);
-  return base64url(bytes).slice(0, length);
-}
-
-async function sha256Base64url(input: string): Promise<string> {
-  const data = new TextEncoder().encode(input);
-  const digest = await crypto.subtle.digest('SHA-256', data);
-  return base64url(digest);
-}
-
-async function makePkce(): Promise<{ codeVerifier: string; codeChallenge: string }> {
-  const codeVerifier = randomString(64);
-  const codeChallenge = await sha256Base64url(codeVerifier);
-  return { codeVerifier, codeChallenge };
-}
-
-/* ------------------------------ Échange du code ---------------------------- */
-
-interface ExchangeArgs {
-  apiUrl: string;
-  code: string;
-  codeVerifier: string;
-  clientId: string;
-  redirectUri: string;
-}
-
-async function exchange({ apiUrl, code, codeVerifier, clientId, redirectUri }: ExchangeArgs): Promise<TokenResult> {
-  const res = await fetch(`${apiUrl}/api/v1/oauth/token`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ code, code_verifier: codeVerifier, client_id: clientId, redirect_uri: redirectUri }),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({} as Record<string, string>));
-    throw new Error(err.detail || err.title || `Token exchange failed (${res.status})`);
-  }
-  return res.json() as Promise<TokenResult>;
-}
-
-function buildAuthorizeUrl(o: { portalUrl: string; clientId: string; redirectUri: string; state: string; codeChallenge: string }): string {
-  const qs = new URLSearchParams({
-    client_id: o.clientId,
-    redirect_uri: o.redirectUri,
-    state: o.state,
-    code_challenge: o.codeChallenge,
-    code_challenge_method: 'S256',
-  });
-  return `${o.portalUrl}/connect?${qs.toString()}`;
-}
-
-/* --------------------------------- API SDK --------------------------------- */
 
 /**
- * Lance le flux et résout avec { token, expires_at }.
- * Popup par défaut ; repli redirection si la popup est bloquée. Le cas « login
- * interactif » (COOP) est couvert via localStorage, à condition que la page
- * redirect_uri appelle handleRedirectCallback().
+ * Demande le consentement du notaire pour `operation` et résout avec le nit.
+ * Popup par défaut ; si elle est bloquée (ou `preferRedirect`), redirection pleine page :
+ * la promesse ne se résout alors jamais et le résultat est rendu par handleRedirectCallback().
+ * Rejette avec une `BnaasConnectError` (voir `code` / `description`).
  */
 export async function connect(opts: ConnectOptions): Promise<TokenResult> {
-  const cfg = { ...DEFAULTS, ...opts };
-  if (!cfg.clientId || !cfg.redirectUri) throw new Error('clientId et redirectUri sont requis');
+  if (!opts || !opts.clientId || !opts.redirectUri) {
+    throw new BnaasConnectError('invalid_config', 'clientId et redirectUri sont requis');
+  }
+  if (!opts.operation) throw new BnaasConnectError('invalid_operation', 'operation requise');
+  const authUrl = opts.authUrl ?? DEFAULT_AUTH_URL;
+  const apiUrl = opts.apiUrl ?? DEFAULT_API_URL;
+  assertUrl('redirectUri', opts.redirectUri);
+  assertUrl('authUrl', authUrl);
+  assertUrl('apiUrl', apiUrl);
 
-  const state = randomString(24);
+  // Validation et encodage AVANT toute ouverture de fenêtre.
+  const operation = encodeOperation(opts.operation);
+  const state = randomString(32);
   const { codeVerifier, codeChallenge } = await makePkce();
-  const authorizeUrl = buildAuthorizeUrl({ portalUrl: cfg.portalUrl, clientId: cfg.clientId, redirectUri: cfg.redirectUri, state, codeChallenge });
-  const portalOrigin = new URL(cfg.portalUrl).origin;
+  const authorizeUrl = buildAuthorizeUrl({
+    authUrl, clientId: opts.clientId, redirectUri: opts.redirectUri, state, codeChallenge, operation,
+    forceReauth: opts.forceReauth,
+  });
 
-  // Redirection pleine page (même fenêtre) : persister pour l'échange au retour.
-  const persistRedirect = () => {
-    const pending: PendingState = { state, codeVerifier, clientId: cfg.clientId, redirectUri: cfg.redirectUri, apiUrl: cfg.apiUrl };
+  const redirectFullPage = (): Promise<TokenResult> => {
+    const pending: PendingState = { state, codeVerifier, clientId: opts.clientId, redirectUri: opts.redirectUri, apiUrl };
     sessionStorage.setItem(SS_KEY, JSON.stringify(pending));
+    window.location.assign(authorizeUrl);
+    return new Promise<TokenResult>(() => { /* la page est quittée */ });
   };
 
-  if (cfg.preferRedirect) {
-    persistRedirect();
-    window.location.href = authorizeUrl;
-    return new Promise<TokenResult>(() => {});
-  }
+  if (opts.preferRedirect) return redirectFullPage();
 
-  // Purger un éventuel résultat périmé d'un flux précédent.
+  // Un flux redirection abandonné ne doit pas être copié dans la popup (le navigateur
+  // duplique sessionStorage à window.open) ; purger aussi un relais périmé.
+  try { sessionStorage.removeItem(SS_KEY); } catch { /* ignore */ }
   try { localStorage.removeItem(RESULT_KEY); } catch { /* ignore */ }
 
-  const popup = window.open(authorizeUrl, 'bnaas_connect', 'width=460,height=640');
-  if (!popup) {
-    persistRedirect();
-    window.location.href = authorizeUrl;
-    return new Promise<TokenResult>(() => {});
-  }
+  const popup = window.open(authorizeUrl, 'bnaas_connect', 'width=480,height=720');
+  if (!popup) return redirectFullPage();
+
+  const ownOrigin = window.location.origin;
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   return new Promise<TokenResult>((resolve, reject) => {
     let settled = false;
+
     const cleanup = () => {
       window.removeEventListener('message', onMessage);
       window.removeEventListener('storage', onStorage);
@@ -180,87 +126,78 @@ export async function connect(opts: ConnectOptions): Promise<TokenResult> {
       settled = true; cleanup();
       try { popup.close(); } catch { /* ignore */ }
       try { localStorage.removeItem(RESULT_KEY); } catch { /* ignore */ }
-      if (payload.error) { reject(new Error(payload.error)); return; }
       try {
-        resolve(await exchange({ apiUrl: cfg.apiUrl, code: payload.code as string, codeVerifier, clientId: cfg.clientId, redirectUri: cfg.redirectUri }));
-      } catch (e) { reject(e as Error); }
+        const code = resolveCallback(state, payload);
+        resolve(await exchangeCode({ apiUrl, code, codeVerifier, clientId: opts.clientId, redirectUri: opts.redirectUri }));
+      } catch (e) { reject(e); }
     };
 
-    // Chemin rapide : postMessage direct du portail (opener intact).
+    // Un retour portant un autre `state` appartient à un autre flux (autre onglet) : ignoré.
+    const accept = (d: RelayPayload | null | undefined) => {
+      if (d && d.state === state) void finish(d);
+    };
+
+    // Chemin direct : la page de callback (même origine) poste à l'ouvreur si opener existe.
     const onMessage = (event: MessageEvent) => {
-      if (event.origin !== portalOrigin) return;
-      const d = event.data as RelayPayload & { type?: string };
-      if (!d || d.type !== 'bnaas_connect') return;
-      if (d.state && d.state !== state) return;
-      void finish({ code: d.code, error: d.error });
+      if (event.origin !== ownOrigin) return;
+      const d = event.data as (RelayPayload & { type?: string }) | null;
+      if (!d || d.type !== MSG_TYPE) return;
+      accept(d);
     };
 
-    // Repli COOP : relais via localStorage depuis la page redirect_uri.
+    // Relais localStorage (opener coupé par COOP après le passage sur auth.*).
     const onStorage = (e: StorageEvent) => {
       if (e.key !== RESULT_KEY || !e.newValue) return;
-      let d: RelayPayload;
-      try { d = JSON.parse(e.newValue); } catch { return; }
-      if (d.state !== state) return;
-      void finish({ code: d.code, error: d.error });
+      try { accept(JSON.parse(e.newValue)); } catch { /* ignore */ }
     };
 
     window.addEventListener('message', onMessage);
     window.addEventListener('storage', onStorage);
 
-    // popup.closed est inutilisable sous COOP : il renvoie true dès l'ouverture
-    // (handle neutralisé), ce qui provoquait un rejet prématuré. On ne s'y fie
-    // donc pas. Le succès = résultat dans localStorage (poll + événement storage) ;
-    // l'abandon = timeout généreux couvrant login + consentement.
+    // popup.closed est inutilisable sous COOP (vrai dès la navigation cross-origin) : on ne
+    // s'y fie pas. Succès = relais reçu ; abandon = délai écoulé.
     const pollTimer = setInterval(() => {
       if (settled) return;
       try {
         const raw = localStorage.getItem(RESULT_KEY);
-        if (raw) {
-          const d: RelayPayload = JSON.parse(raw);
-          if (d.state === state) { void finish({ code: d.code, error: d.error }); }
-        }
+        if (raw) accept(JSON.parse(raw));
       } catch { /* ignore */ }
     }, 400);
 
     const timeoutId = setTimeout(() => {
       if (settled) return;
       settled = true; cleanup();
-      reject(new Error('timeout'));
-    }, 300000);
+      reject(new BnaasConnectError('timeout'));
+    }, timeoutMs);
   });
 }
 
 /**
- * À appeler au chargement de la page de callback (redirect_uri).
- * - Redirection pleine page (même fenêtre) : échange et renvoie { token, expires_at }.
- * - Popup (fenêtre séparée) : relaie le code à l'ouvreur via localStorage puis se
- *   ferme (renvoie null — c'est connect() de l'ouvreur qui résout).
- * - Aucun flux en attente : renvoie null.
+ * À appeler au chargement de la page `redirect_uri`.
+ * - Redirection pleine page : vérifie `state`, échange le code et renvoie le résultat.
+ * - Popup : relaie le retour à la fenêtre ouvrante puis se ferme (renvoie `null` ;
+ *   c'est connect() qui vérifie `state` et résout).
+ * - Pas un retour OAuth : renvoie `null`.
  */
 export async function handleRedirectCallback(): Promise<TokenResult | null> {
-  const q = new URLSearchParams(window.location.search);
-  const code = q.get('code');
-  const state = q.get('state');
-  const error = q.get('error');
-  if (!code && !error) return null;
+  const cb = parseCallback(window.location.search);
+  if (!cb) return null;
 
-  // Redirection pleine page : le code_verifier est dans le sessionStorage de CETTE fenêtre.
   const raw = sessionStorage.getItem(SS_KEY);
   if (raw) {
     sessionStorage.removeItem(SS_KEY);
-    const pending: PendingState = JSON.parse(raw);
-    if (state && pending.state && state !== pending.state) throw new Error('state_mismatch');
-    if (error) throw new Error(error);
-    return exchange({
-      apiUrl: pending.apiUrl, code: code as string, codeVerifier: pending.codeVerifier,
+    const pending = JSON.parse(raw) as PendingState;
+    const code = resolveCallback(pending.state, cb);
+    return exchangeCode({
+      apiUrl: pending.apiUrl, code, codeVerifier: pending.codeVerifier,
       clientId: pending.clientId, redirectUri: pending.redirectUri,
     });
   }
 
-  // Popup : relayer à l'ouvreur (même origine) via localStorage, puis fermer.
-  const payload: RelayPayload = { state: state || undefined, code: code || undefined, error: error || undefined, ts: Date.now() };
+  const payload: RelayPayload = { ...cb, ts: Date.now() };
   try { localStorage.setItem(RESULT_KEY, JSON.stringify(payload)); } catch { /* ignore */ }
-  // Laisser le temps à l'événement storage de partir avant de fermer.
+  try { window.opener?.postMessage({ type: MSG_TYPE, ...payload }, window.location.origin); } catch { /* ignore */ }
+  // Laisser partir l'événement storage avant de fermer.
   setTimeout(() => { try { window.close(); } catch { /* ignore */ } }, 100);
   return null;
 }
