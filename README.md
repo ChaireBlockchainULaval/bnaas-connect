@@ -8,7 +8,8 @@ un **jeton d'identité notariale** (`bnaas_nit_…`) **lié à cette seule opér
 - OAuth 2.0 Authorization Code + **PKCE (S256)**, `state` vérifié.
 - Popup par défaut, **repli en redirection pleine page** si la popup est bloquée.
 
-> Passage de 0.3.x à 1.0.0 : voir **[CHANGELOG.md](CHANGELOG.md)** (changement incompatible).
+> Passage de 0.3.x à 1.0.0 (changement incompatible) : **[docs/MIGRATION-1.0.md](docs/MIGRATION-1.0.md)**.
+> Historique des versions : **[CHANGELOG.md](CHANGELOG.md)**.
 > Guide d'intégration : **[docs/GUIDE-PARTENAIRE.md](docs/GUIDE-PARTENAIRE.md)**.
 > Mainteneurs : **[CONTRIBUTING.md](CONTRIBUTING.md)**.
 
