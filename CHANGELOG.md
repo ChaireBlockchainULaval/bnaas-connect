@@ -3,7 +3,7 @@
 Format inspiré de [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) ; versions
 [SemVer](https://semver.org/lang/fr/).
 
-## [1.0.0] — non publiée
+## [1.0.0] — 2026-11-27
 
 **Changement incompatible.** Authentification V2 du Gateway BNAAS : consentement du notaire
 à **chaque opération notariale**. Le chemin V1 est retiré ; il cesse de fonctionner à la
